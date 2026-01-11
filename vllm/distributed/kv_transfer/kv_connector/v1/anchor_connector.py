@@ -26,6 +26,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
+    SupportsHMA,
 )
 from vllm.logger import init_logger
 
@@ -78,7 +79,7 @@ class AnchorConnectorMetadata(KVConnectorMetadata):
         ))
 
 
-class AnchorConnector(KVConnectorBase_V1):
+class AnchorConnector(KVConnectorBase_V1, SupportsHMA):
     """
     Anchor-based KV connector for Kimi-Linear models.
 
@@ -87,6 +88,7 @@ class AnchorConnector(KVConnectorBase_V1):
     - MLA K,V cache (standard attention)
 
     Uses semantic anchors as cache keys for efficient lookup.
+    Supports HMA (Hybrid Memory Allocator) for hybrid models.
     """
 
     def __init__(
@@ -387,3 +389,15 @@ class AnchorConnector(KVConnectorBase_V1):
             shutil.rmtree(anchor_path)
             return True
         return False
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """
+        Called when a request finishes for all KV cache groups (HMA support).
+        Returns (should_defer_free, optional_kv_transfer_params).
+        """
+        # For now, don't defer block freeing
+        return False, None

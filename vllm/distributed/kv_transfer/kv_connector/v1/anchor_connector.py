@@ -28,8 +28,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.logger import init_logger
-from vllm.v1.attention.backend import AttentionMetadata
-from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
     from vllm.forward_context import ForwardContext
@@ -232,7 +230,7 @@ class AnchorConnector(KVConnectorBase_V1):
         self,
         layer_name: str,
         kv_layer: torch.Tensor,
-        attn_metadata: "AttentionMetadata",
+        attn_metadata: Any,  # AttentionMetadata - using Any for compatibility
         **kwargs: Any,
     ) -> None:
         """Save KV cache to anchor storage."""
@@ -337,7 +335,7 @@ class AnchorConnector(KVConnectorBase_V1):
 
     def build_connector_meta(
         self,
-        scheduler_output: SchedulerOutput
+        scheduler_output: Any  # SchedulerOutput - using Any for compatibility
     ) -> KVConnectorMetadata:
         """Build connector metadata for this step."""
         meta = AnchorConnectorMetadata()

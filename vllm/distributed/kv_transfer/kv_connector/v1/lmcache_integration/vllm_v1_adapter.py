@@ -75,6 +75,10 @@ class LoadSpec:
     lmcache_cached_tokens: int
     # Whether the scheduler allow us to load the tokens
     can_load: bool
+    # SELECTIVE LOADING: List of block hashes to load (None = prefix mode)
+    selected_hashes: list[int] | None = None
+    # SELECTIVE LOADING: Token count per block
+    block_offsets: list[int] | None = None
 
 
 @dataclass
@@ -856,7 +860,19 @@ class LMCacheConnectorV1Impl:
             token_mask[:masked_token_count] = False
 
             lmcache_cached_tokens = request.load_spec.lmcache_cached_tokens
+
+            # Check for selective mode
+            is_selective = (
+                request.load_spec.selected_hashes is not None
+                and request.load_spec.block_offsets is not None
+            )
+
             if self.use_layerwise:
+                if is_selective:
+                    logger.warning(
+                        "SELECTIVE MODE not yet supported with layerwise retrieval, "
+                        "falling back to prefix mode"
+                    )
                 sync = idx == last_idx
                 # NOTE(Jiayi): Perform blending before layerwise prefix caching
                 if self.enable_blending:
@@ -881,30 +897,73 @@ class LMCacheConnectorV1Impl:
                     next(layerwise_retriever)
                     self.layerwise_retrievers.append(layerwise_retriever)
             else:
-                ret_token_mask = self.lmcache_engine.retrieve(
-                    tokens[:lmcache_cached_tokens],
-                    token_mask[:lmcache_cached_tokens],
-                    kvcaches=kvcaches,
-                    slot_mapping=slot_mapping[:lmcache_cached_tokens],
-                    request_configs=request.request_configs,
-                    req_id=request.req_id,
-                )
+                # SELECTIVE LOADING: Check if we should use hashes instead of tokens
+                selected_hashes = request.load_spec.selected_hashes
+                block_offsets = request.load_spec.block_offsets
 
-                # Check the result
-                num_retrieved_tokens = ret_token_mask.sum().item()
-                num_expected_tokens = (
-                    lmcache_cached_tokens - request.load_spec.vllm_cached_tokens
-                )
-                if num_retrieved_tokens < num_expected_tokens:
-                    logger.error(
-                        "The number of retrieved tokens is less than the "
-                        "expected number of tokens! This should not happen!"
+                if selected_hashes is not None and block_offsets is not None:
+                    # SELECTIVE MODE: Load specific blocks by hash
+                    # Option A: Contiguous slot mapping - blocks are placed at
+                    # positions 0, 1, 2... regardless of original positions
+                    total_selective_tokens = sum(block_offsets)
+                    logger.info(
+                        "SELECTIVE LOAD: %d blocks, %d tokens, contiguous mapping",
+                        len(selected_hashes),
+                        total_selective_tokens,
                     )
-                    logger.error(
-                        "Num retrieved tokens: %d, num expected tokens: %d",
-                        num_retrieved_tokens,
-                        num_expected_tokens,
+
+                    # Use contiguous slot_mapping from position 0
+                    contiguous_slot_mapping = slot_mapping[:total_selective_tokens]
+
+                    # Create mask for selective tokens
+                    selective_token_mask = torch.ones(
+                        total_selective_tokens, dtype=torch.bool
                     )
+
+                    ret_token_mask = self.lmcache_engine.retrieve(
+                        hashes=selected_hashes,
+                        offsets=block_offsets,
+                        mask=selective_token_mask,
+                        kvcaches=kvcaches,
+                        slot_mapping=contiguous_slot_mapping,
+                        request_configs=request.request_configs,
+                        req_id=request.req_id,
+                    )
+
+                    # Check the result
+                    num_retrieved_tokens = ret_token_mask.sum().item()
+                    if num_retrieved_tokens < total_selective_tokens:
+                        logger.warning(
+                            "SELECTIVE: Retrieved %d tokens, expected %d",
+                            num_retrieved_tokens,
+                            total_selective_tokens,
+                        )
+                else:
+                    # PREFIX MODE: Normal token-based retrieval
+                    ret_token_mask = self.lmcache_engine.retrieve(
+                        tokens[:lmcache_cached_tokens],
+                        token_mask[:lmcache_cached_tokens],
+                        kvcaches=kvcaches,
+                        slot_mapping=slot_mapping[:lmcache_cached_tokens],
+                        request_configs=request.request_configs,
+                        req_id=request.req_id,
+                    )
+
+                    # Check the result
+                    num_retrieved_tokens = ret_token_mask.sum().item()
+                    num_expected_tokens = (
+                        lmcache_cached_tokens - request.load_spec.vllm_cached_tokens
+                    )
+                    if num_retrieved_tokens < num_expected_tokens:
+                        logger.error(
+                            "The number of retrieved tokens is less than the "
+                            "expected number of tokens! This should not happen!"
+                        )
+                        logger.error(
+                            "Num retrieved tokens: %d, num expected tokens: %d",
+                            num_retrieved_tokens,
+                            num_expected_tokens,
+                        )
 
     @_lmcache_nvtx_annotate
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -1186,11 +1245,29 @@ class LMCacheConnectorV1Impl:
 
         self._lookup_requests_in_step.append(lookup_id)
 
-        num_external_hit_tokens = self.lookup_client.lookup(
-            token_ids,
-            lookup_id=lookup_id,
-            request_configs=request_configs,
-        )
+        # SELECTIVE LOADING: Check if user specified which blocks to load
+        selective_hashes = None
+        selective_offsets = None
+        if request_configs:
+            selective_hashes = request_configs.get("lmcache.selective_hashes")
+            selective_offsets = request_configs.get("lmcache.selective_offsets")
+
+        if selective_hashes is not None and selective_offsets is not None:
+            # SELECTIVE MODE: User specified which blocks to load
+            num_external_hit_tokens = sum(selective_offsets)
+            logger.info(
+                "Reqid: %s, SELECTIVE MODE: Loading %d blocks, %d tokens",
+                request.request_id,
+                len(selective_hashes),
+                num_external_hit_tokens,
+            )
+        else:
+            # PREFIX MODE: Normal lookup
+            num_external_hit_tokens = self.lookup_client.lookup(
+                token_ids,
+                lookup_id=lookup_id,
+                request_configs=request_configs,
+            )
 
         if num_external_hit_tokens is None:
             logger.info(
@@ -1222,6 +1299,8 @@ class LMCacheConnectorV1Impl:
             vllm_cached_tokens=num_computed_tokens,
             lmcache_cached_tokens=num_external_hit_tokens,
             can_load=False,
+            selected_hashes=selective_hashes,
+            block_offsets=selective_offsets,
         )
 
         if need_to_allocate <= 0:

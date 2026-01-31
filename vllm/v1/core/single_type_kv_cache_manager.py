@@ -304,6 +304,7 @@ class SingleTypeKVCacheManager(ABC):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
         """
         Get the longest cache hit prefix of the blocks that is not longer than
@@ -326,6 +327,8 @@ class SingleTypeKVCacheManager(ABC):
                 be set to the block_size.
             dcp_world_size: The world size of decode context parallelism.
             pcp_world_size: The world size of prefill context parallelism.
+            noncontiguous: If True, use null_blocks for cache misses instead of
+                stopping at the first miss. This enables non-contiguous cache hits.
 
         Returns:
             A list of cached blocks with skipped blocks replaced by null block
@@ -410,6 +413,7 @@ class FullAttentionManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
         assert isinstance(
             kv_cache_spec, FullAttentionSpec | ChunkedLocalAttentionSpec
@@ -417,34 +421,60 @@ class FullAttentionManager(SingleTypeKVCacheManager):
             "FullAttentionManager can only be used for full attention "
             "and chunked local attention groups"
         )
-        computed_blocks: tuple[list[KVCacheBlock], ...] = tuple(
-            [] for _ in range(len(kv_cache_group_ids))
-        )
         block_size = kv_cache_spec.block_size
         if dcp_world_size * pcp_world_size > 1:
             block_size *= dcp_world_size * pcp_world_size
         max_num_blocks = max_length // block_size
-        for block_hash in itertools.islice(block_hashes, max_num_blocks):
-            # block_hashes is a chain of block hashes. If a block hash is not
-            # in the cached_block_hash_to_id, the following block hashes are
-            # not computed yet for sure.
-            if cached_block := block_pool.get_cached_block(
-                block_hash, kv_cache_group_ids
+
+        if noncontiguous:
+            # Non-contiguous mode: use null_blocks for cache misses
+            # This allows cache hits on blocks after a gap (e.g., hit 0, 2, 3 if 1 evicted)
+            computed_blocks: tuple[list[KVCacheBlock], ...] = tuple(
+                [block_pool.null_block] * max_num_blocks
+                for _ in range(len(kv_cache_group_ids))
+            )
+            for i, block_hash in enumerate(
+                itertools.islice(block_hashes, max_num_blocks)
             ):
-                for computed, cached in zip(computed_blocks, cached_block):
-                    computed.append(cached)
-            else:
-                break
-        if use_eagle and computed_blocks[0]:
-            # Need to drop the last matched block if eagle is enabled.
-            for computed in computed_blocks:
-                computed.pop()
-        while (
-            block_size != alignment_tokens  # Faster for common case.
-            and len(computed_blocks[0]) * block_size % alignment_tokens != 0
-        ):
-            for computed in computed_blocks:
-                computed.pop()
+                if cached_block := block_pool.get_cached_block(
+                    block_hash, kv_cache_group_ids
+                ):
+                    for computed, cached in zip(computed_blocks, cached_block):
+                        computed[i] = cached
+            # Handle eagle: mark last real block as null to force recompute
+            if use_eagle and max_num_blocks > 0:
+                # Find the last non-null block and mark it null
+                for i in range(max_num_blocks - 1, -1, -1):
+                    if computed_blocks[0][i] != block_pool.null_block:
+                        for computed in computed_blocks:
+                            computed[i] = block_pool.null_block
+                        break
+        else:
+            # Original contiguous mode: break at first miss
+            computed_blocks = tuple(
+                [] for _ in range(len(kv_cache_group_ids))
+            )
+            for block_hash in itertools.islice(block_hashes, max_num_blocks):
+                # block_hashes is a chain of block hashes. If a block hash is not
+                # in the cached_block_hash_to_id, the following block hashes are
+                # not computed yet for sure.
+                if cached_block := block_pool.get_cached_block(
+                    block_hash, kv_cache_group_ids
+                ):
+                    for computed, cached in zip(computed_blocks, cached_block):
+                        computed.append(cached)
+                else:
+                    break
+            if use_eagle and computed_blocks[0]:
+                # Need to drop the last matched block if eagle is enabled.
+                for computed in computed_blocks:
+                    computed.pop()
+            while (
+                block_size != alignment_tokens  # Faster for common case.
+                and len(computed_blocks[0]) * block_size % alignment_tokens != 0
+            ):
+                for computed in computed_blocks:
+                    computed.pop()
         return computed_blocks
 
     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
@@ -475,7 +505,10 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
+        # Note: noncontiguous parameter unused - SlidingWindowManager already
+        # uses null_blocks for positions outside the sliding window
         assert isinstance(kv_cache_spec, SlidingWindowSpec), (
             "SlidingWindowManager can only be used for sliding window groups"
         )
@@ -608,6 +641,7 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
         """
         For chunked local attention, we need to find the longest cache hit
@@ -616,6 +650,9 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
         `kv_cache_group_ids`. If no cache hit is found, return an empty list.
         note we mark as computed if the whole block is outside of the local
         window, and set the block as null. Examples:
+
+        Note: noncontiguous parameter unused - ChunkedLocalAttentionManager
+        already uses null_blocks for positions outside the local attention window.
 
         1. Attention chunk size of 8, block size of 4, max length of 15
         for next token at 15th (zero-indexed), 8th - 14th tokens are in
@@ -765,7 +802,9 @@ class MambaManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
+        # Note: noncontiguous parameter unused for MambaManager
         assert isinstance(kv_cache_spec, MambaSpec), (
             "MambaManager can only be used for mamba groups"
         )
@@ -1009,7 +1048,9 @@ class CrossAttentionManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
+        noncontiguous: bool = False,
     ) -> tuple[list[KVCacheBlock], ...]:
+        # Note: noncontiguous parameter unused for CrossAttentionManager
         assert isinstance(kv_cache_spec, CrossAttentionSpec), (
             "CrossAttentionManager can only be used for cross-attention groups"
         )

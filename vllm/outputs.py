@@ -105,6 +105,8 @@ class RequestOutput:
                                   None if decoder-only.
         num_cached_tokens: The number of tokens with prefix cache hit.
         kv_transfer_params: The params for remote K/V transfer.
+        block_hashes: Hex-encoded hashes of the request's KV cache blocks.
+        block_size: Block size in tokens for interpreting block_hashes.
     """
 
     def __init__(
@@ -123,6 +125,8 @@ class RequestOutput:
         *,
         multi_modal_placeholders: MultiModalPlaceholderDict | None = None,
         kv_transfer_params: dict[str, Any] | None = None,
+        block_hashes: list[str] | None = None,
+        block_size: int | None = None,
         # Forward compatibility, code that uses args added in new release can
         # still run with older versions of vLLM without breaking.
         **kwargs: Any,
@@ -144,6 +148,8 @@ class RequestOutput:
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.num_cached_tokens = num_cached_tokens
         self.kv_transfer_params = kv_transfer_params
+        self.block_hashes = block_hashes
+        self.block_size = block_size
 
     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
         """Merge subsequent RequestOutput into this one"""
@@ -188,7 +194,9 @@ class RequestOutput:
             f"metrics={self.metrics}, "
             f"lora_request={self.lora_request}, "
             f"num_cached_tokens={self.num_cached_tokens}, "
-            f"multi_modal_placeholders={self.multi_modal_placeholders})"
+            f"multi_modal_placeholders={self.multi_modal_placeholders}, "
+            f"block_hashes={self.block_hashes}, "
+            f"block_size={self.block_size})"
         )
 
 

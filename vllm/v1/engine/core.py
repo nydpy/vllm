@@ -199,7 +199,9 @@ class EngineCore:
             init_none_hash(caching_hash_fn)
 
             self.request_block_hasher = get_request_block_hasher(
-                scheduler_block_size, caching_hash_fn
+                scheduler_block_size,
+                caching_hash_fn,
+                content_only=vllm_config.cache_config.noncontiguous_prefix_caching,
             )
 
         self.step_fn = (
@@ -564,6 +566,17 @@ class EngineCore:
         return self.scheduler.reset_prefix_cache(
             reset_running_requests, reset_connector
         )
+
+    def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        """Evict specific blocks from the KV cache by their content hashes.
+
+        Args:
+            block_hashes: List of hex-encoded block hashes to evict.
+
+        Returns:
+            The number of blocks evicted.
+        """
+        return self.scheduler.evict_cache_blocks(block_hashes)
 
     def sleep(self, level: int = 1):
         self.model_executor.sleep(level)

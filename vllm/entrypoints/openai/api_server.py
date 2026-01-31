@@ -251,6 +251,38 @@ async def show_version():
     return JSONResponse(content=ver)
 
 
+class CacheEvictRequest(pydantic.BaseModel):
+    """Request body for the /cache/evict endpoint."""
+
+    block_hashes: list[str]
+    """List of hex-encoded block hashes to evict from the KV cache."""
+
+
+@router.post("/cache/evict")
+async def evict_cache_blocks(request: Request, evict_request: CacheEvictRequest):
+    """Evict specific blocks from the KV cache by their content hashes.
+
+    This endpoint is used for selective cache eviction in non-contiguous
+    prefix caching scenarios. It allows clients to "forget" specific portions
+    of cached context by evicting their corresponding cache blocks.
+
+    Args:
+        evict_request: Contains the list of block hashes to evict.
+
+    Returns:
+        JSON response with evicted_count and the list of hashes that were
+        requested to be evicted.
+    """
+    client = engine_client(request)
+    evicted_count = await client.evict_cache_blocks(evict_request.block_hashes)
+    return JSONResponse(
+        content={
+            "evicted_count": evicted_count,
+            "evicted_hashes": evict_request.block_hashes,
+        }
+    )
+
+
 def load_log_config(log_config_file: str | None) -> dict | None:
     if not log_config_file:
         return None

@@ -140,6 +140,10 @@ class RequestState:
         self.queue = queue
         self.num_cached_tokens = 0
 
+        # Block hashes for non-contiguous prefix caching
+        self.block_hashes: list[str] | None = None
+        self.block_size: int | None = None
+
         self.stats = RequestStateStats(arrival_time=arrival_time) if log_stats else None
 
         # Stream Interval
@@ -313,6 +317,8 @@ class RequestState:
             kv_transfer_params=kv_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
             metrics=self.stats,
+            block_hashes=self.block_hashes,
+            block_size=self.block_size,
         )
 
     def _new_completion_output(
@@ -536,6 +542,11 @@ class OutputProcessor:
             routed_experts = engine_core_output.routed_experts
             req_state.num_cached_tokens = engine_core_output.num_cached_tokens
             req_state.is_prefilling = False
+
+            # Update block hashes for non-contiguous prefix caching
+            if engine_core_output.block_hashes is not None:
+                req_state.block_hashes = engine_core_output.block_hashes
+                req_state.block_size = engine_core_output.block_size
 
             if pooling_output is None:
                 assert req_state.detokenizer is not None

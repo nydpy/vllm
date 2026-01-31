@@ -421,6 +421,38 @@ class BlockPool:
             block = self.blocks[block_id]
             self._maybe_evict_cached_block(block)
 
+    def evict_blocks_by_hash(self, block_hashes_hex: list[str]) -> int:
+        """Evict blocks from the prefix cache by their content hashes.
+
+        This method is used for selective cache eviction in non-contiguous
+        prefix caching scenarios. Blocks with matching hashes are evicted
+        from the cache, regardless of which KV cache group they belong to.
+
+        Args:
+            block_hashes_hex: List of hex-encoded block hashes to evict.
+
+        Returns:
+            The number of blocks evicted.
+        """
+        if not self.enable_caching:
+            return 0
+
+        # Convert hex strings to bytes for comparison
+        hashes_to_evict = {bytes.fromhex(h) for h in block_hashes_hex}
+        evicted_count = 0
+
+        # Iterate through all blocks and evict those with matching hashes
+        for block in self.blocks:
+            if block.block_hash is None or block.is_null:
+                continue
+            # Extract the BlockHash portion (without group_id suffix)
+            block_hash_bytes = get_block_hash(block.block_hash)
+            if block_hash_bytes in hashes_to_evict:
+                if self._maybe_evict_cached_block(block):
+                    evicted_count += 1
+
+        return evicted_count
+
     def reset_prefix_cache(self) -> bool:
         """Reset prefix cache. This function may be used in RLHF
         flows to invalid prefix caching after the weights are updated,

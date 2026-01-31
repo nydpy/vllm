@@ -126,6 +126,18 @@ class EngineClient(ABC):
         ...
 
     @abstractmethod
+    async def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        """Evict specific blocks from the KV cache by their content hashes.
+
+        Args:
+            block_hashes: List of hex-encoded block hashes to evict.
+
+        Returns:
+            The number of blocks evicted.
+        """
+        ...
+
+    @abstractmethod
     async def sleep(self, level: int = 1) -> None:
         """Sleep the engine"""
         ...

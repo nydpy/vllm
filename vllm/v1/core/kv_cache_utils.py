@@ -527,38 +527,57 @@ def hash_block_tokens(
     parent_block_hash: BlockHash | None,
     curr_block_token_ids: Sequence[int],
     extra_keys: tuple[Any, ...] | None = None,
+    content_only: bool = False,
 ) -> BlockHash:
     """Computes a hash value corresponding to the contents of a block and
-    the contents of the preceding block(s). The hash value is used for
-    prefix caching. We use LRU cache for this function to avoid recomputing
+    optionally the contents of the preceding block(s). The hash value is used
+    for prefix caching. We use LRU cache for this function to avoid recomputing
     hash values for the same block contents.
     Args:
         hash_function: The hash function used to compute block hash.
         parent_block_hash: The hash of the parent block. None
-            if this is the first block.
+            if this is the first block. Ignored if content_only=True.
         curr_block_token_ids: A list of token ids in the current
             block. The current block is assumed to be full.
         extra_keys: Extra keys for the block.
+        content_only: If True, hash only the block's content without
+            parent dependency. This enables non-contiguous cache hits.
     Returns:
         The hash value of the block and the token ids in the block.
         The entire tuple is used as the hash key of the block.
     """
-    if not parent_block_hash:
-        parent_block_hash = NONE_HASH
-
     curr_block_token_ids_tuple = tuple(curr_block_token_ids)
-    return BlockHash(
-        hash_function((parent_block_hash, curr_block_token_ids_tuple, extra_keys))
-    )
+
+    if content_only:
+        # Content-only hashing: no parent dependency
+        # Enables non-contiguous cache hits
+        return BlockHash(
+            hash_function((curr_block_token_ids_tuple, extra_keys))
+        )
+    else:
+        # Prefix-chain hashing: depends on parent block
+        if not parent_block_hash:
+            parent_block_hash = NONE_HASH
+        return BlockHash(
+            hash_function((parent_block_hash, curr_block_token_ids_tuple, extra_keys))
+        )
 
 
 def get_request_block_hasher(
     block_size: int,
     caching_hash_fn: Callable[[Any], bytes],
+    content_only: bool = False,
 ) -> Callable[[Request], list[BlockHash]]:
     """
     Returns a function which computes the list of un-computed block hashes
-    of a request."""
+    of a request.
+
+    Args:
+        block_size: The number of tokens per block.
+        caching_hash_fn: The hash function to use.
+        content_only: If True, use content-only hashing (no parent dependency).
+            This enables non-contiguous cache hits.
+    """
 
     def request_block_hasher(request: Request) -> list[BlockHash]:
         start_token_idx = len(request.block_hashes) * block_size
@@ -594,12 +613,18 @@ def get_request_block_hasher(
             # Compute the hash of the current block
             block_tokens = request.all_token_ids[start_token_idx:end_token_idx]
             block_hash = hash_block_tokens(
-                caching_hash_fn, prev_block_hash_value, block_tokens, extra_keys
+                caching_hash_fn,
+                prev_block_hash_value,
+                block_tokens,
+                extra_keys,
+                content_only=content_only,
             )
 
             new_block_hashes.append(block_hash)
             start_token_idx += block_size
-            prev_block_hash_value = block_hash
+            # Only track prev hash if not in content-only mode
+            if not content_only:
+                prev_block_hash_value = block_hash
 
         return new_block_hashes
 

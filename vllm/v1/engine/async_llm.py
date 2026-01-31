@@ -750,6 +750,9 @@ class AsyncLLM(EngineClient):
             reset_running_requests, reset_connector
         )
 
+    async def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        return await self.engine_core.evict_cache_blocks_async(block_hashes)
+
     async def sleep(self, level: int = 1) -> None:
         await self.reset_prefix_cache()
         await self.engine_core.sleep_async(level)

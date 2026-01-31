@@ -77,6 +77,11 @@ class CacheConfig:
     `ModelConfig` and that value should be manually duplicated here."""
     enable_prefix_caching: bool = True
     """Whether to enable prefix caching."""
+    noncontiguous_prefix_caching: bool = False
+    """Whether to enable non-contiguous prefix caching. When True, each block's
+    hash is computed from its content only (not dependent on parent block hash).
+    This allows cache hits on non-contiguous blocks - for example, hitting
+    blocks 0, 2, 3 even if block 1 is evicted. Requires enable_prefix_caching=True."""
     prefix_caching_hash_algo: PrefixCachingHashAlgo = "sha256"
     """Set the hash algorithm for prefix caching:\n
     - "sha256" uses Pickle for object serialization before hashing. This is the

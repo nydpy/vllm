@@ -104,12 +104,14 @@ class KVCacheManager:
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        noncontiguous_prefix_caching: bool = False,
     ) -> None:
         self.max_model_len = max_model_len
 
         self.enable_caching = enable_caching
         self.use_eagle = use_eagle
         self.log_stats = log_stats
+        self.noncontiguous_prefix_caching = noncontiguous_prefix_caching
         self.metrics_collector = metrics_collector
         # FIXME: make prefix cache stats conditional on log_stats. We still need
         # this comment because when the log stats is enabled there are still
@@ -189,7 +191,9 @@ class KVCacheManager:
         max_cache_hit_length = request.num_tokens - 1
         computed_blocks, num_new_computed_tokens = (
             self.coordinator.find_longest_cache_hit(
-                request.block_hashes, max_cache_hit_length
+                request.block_hashes,
+                max_cache_hit_length,
+                noncontiguous=self.noncontiguous_prefix_caching,
             )
         )
 
@@ -421,6 +425,20 @@ class KVCacheManager:
             assert self.prefix_cache_stats is not None
             self.prefix_cache_stats.reset = True
         return True
+
+    def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        """Evict specific blocks from the KV cache by their content hashes.
+
+        This method is used for selective cache eviction in non-contiguous
+        prefix caching scenarios.
+
+        Args:
+            block_hashes: List of hex-encoded block hashes to evict.
+
+        Returns:
+            The number of blocks evicted.
+        """
+        return self.block_pool.evict_blocks_by_hash(block_hashes)
 
     def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
         """Calculate the number of common prefix blocks for each kv cache group.

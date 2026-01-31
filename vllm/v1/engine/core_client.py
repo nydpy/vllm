@@ -765,6 +765,9 @@ class SyncMPClient(MPClient):
             "reset_prefix_cache", reset_running_requests, reset_connector
         )
 
+    def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        return self.call_utility("evict_cache_blocks", block_hashes)
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.call_utility("add_lora", lora_request)
 
@@ -972,6 +975,9 @@ class AsyncMPClient(MPClient):
         return await self.call_utility_async(
             "reset_prefix_cache", reset_running_requests, reset_connector
         )
+
+    async def evict_cache_blocks_async(self, block_hashes: list[str]) -> int:
+        return await self.call_utility_async("evict_cache_blocks", block_hashes)
 
     async def sleep_async(self, level: int = 1) -> None:
         await self.call_utility_async("sleep", level)

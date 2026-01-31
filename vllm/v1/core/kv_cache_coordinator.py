@@ -244,6 +244,7 @@ class KVCacheCoordinator(ABC):
         self,
         block_hashes: list[BlockHash],
         max_cache_hit_length: int,
+        noncontiguous: bool = False,
     ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         pass
 
@@ -287,6 +288,7 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
         self,
         block_hashes: list[BlockHash],
         max_cache_hit_length: int,
+        noncontiguous: bool = False,
     ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         blocks: tuple[list[KVCacheBlock], ...] = tuple(
             [] for _ in range(self.num_single_type_manager)
@@ -345,6 +347,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         self,
         block_hashes: list[BlockHash],
         max_cache_hit_length: int,
+        noncontiguous: bool = False,
     ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         hit_blocks = self.single_type_managers[0].find_longest_cache_hit(
             block_hashes=block_hashes,
@@ -356,6 +359,7 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
             alignment_tokens=self.block_size,
             dcp_world_size=self.dcp_world_size,
             pcp_world_size=self.pcp_world_size,
+            noncontiguous=noncontiguous,
         )
         return hit_blocks, len(hit_blocks[0]) * self.block_size
 
@@ -449,6 +453,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
         self,
         block_hashes: list[BlockHash],
         max_cache_hit_length: int,
+        noncontiguous: bool = False,
     ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         """
         Find the longest cache hit using an iterative fixed-point algorithm.
@@ -461,6 +466,8 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
         Args:
             block_hashes: The block hashes of the request.
             max_cache_hit_length: The maximum length of the cache hit.
+            noncontiguous: If True, allow non-contiguous cache hits using
+                null_blocks for cache misses.
 
         Returns:
             A tuple containing:
@@ -508,6 +515,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
                         kv_cache_spec=spec,
                         use_eagle=self.use_eagle,
                         alignment_tokens=self.lcm_block_size,
+                        noncontiguous=noncontiguous,
                     )
                     curr_hit_length = len(hit_blocks[0]) * spec.block_size
                     for group_id, blocks in zip(group_ids, hit_blocks):

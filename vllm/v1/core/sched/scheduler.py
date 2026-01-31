@@ -223,6 +223,7 @@ class Scheduler(SchedulerInterface):
             pcp_world_size=self.pcp_world_size,
             hash_block_size=self.block_size,
             metrics_collector=self.kv_metrics_collector,
+            noncontiguous_prefix_caching=self.cache_config.noncontiguous_prefix_caching,
         )
         self.use_pp = self.parallel_config.pipeline_parallel_size > 1
         self.use_v2_model_runner = envs.VLLM_USE_V2_MODEL_RUNNER
@@ -1311,6 +1312,13 @@ class Scheduler(SchedulerInterface):
                 or stopped
             ):
                 # Add EngineCoreOutput for this Request.
+                # Include block hashes for finished requests when prefix caching
+                # is enabled (for non-contiguous cache eviction support).
+                block_hashes = None
+                block_size = None
+                if stopped and request.block_hashes:
+                    block_hashes = [h.hex() for h in request.block_hashes]
+                    block_size = self.cache_config.block_size
                 outputs[request.client_index].append(
                     EngineCoreOutput(
                         request_id=req_id,
@@ -1326,6 +1334,8 @@ class Scheduler(SchedulerInterface):
                         num_cached_tokens=request.num_cached_tokens,
                         routed_experts=routed_experts,
                         num_nans_in_logits=request.num_nans_in_logits,
+                        block_hashes=block_hashes,
+                        block_size=block_size,
                     )
                 )
             else:
@@ -1653,6 +1663,22 @@ class Scheduler(SchedulerInterface):
             reset_successful = self.reset_connector_cache() and reset_successful
 
         return reset_successful
+
+    def evict_cache_blocks(self, block_hashes: list[str]) -> int:
+        """Evict specific blocks from the KV cache by their content hashes.
+
+        This method is used for selective cache eviction in non-contiguous
+        prefix caching scenarios. Unlike reset_prefix_cache which clears all
+        cached blocks, this allows evicting specific blocks identified by their
+        content hash.
+
+        Args:
+            block_hashes: List of hex-encoded block hashes to evict.
+
+        Returns:
+            The number of blocks evicted.
+        """
+        return self.kv_cache_manager.evict_cache_blocks(block_hashes)
 
     def reset_connector_cache(self) -> bool:
         if self.connector is None:
